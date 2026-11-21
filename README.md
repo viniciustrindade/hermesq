@@ -209,6 +209,20 @@ rm ~/.hermes/scripts/hermesq-watch.sh
 hermes plugins remove hermesq
 ```
 
+## Deploy
+
+The `staging` GitHub Environment (Settings, Environments) needs exactly this before `cd.yml` can deploy:
+
+| Kind | Name | Notes |
+|---|---|---|
+| secret | `CLOUDFLARE_API_TOKEN` | API token with **edit** permission on Workers Scripts, Queues, KV and D1 |
+| secret | `CLOUDFLARE_ACCOUNT_ID` | the Cloudflare account that owns the Worker |
+| variable | `WORKER_URL` | public URL of the Worker, used by the health check (`GET /health`) |
+
+If a secret is missing the deploy job stops in its first step, naming the missing variable (never a value), instead of failing
+queue by queue. A token that can deploy production does not isolate staging: scope the token to what the environment
+needs, or use a separate token per environment (a separate `production` Environment with required reviewers).
+
 ## CI/CD (for forks that deploy from GitHub Actions)
 
 - `ci.yml`: job `checks` (the required status check on `main`): lint, typecheck, unit tests (inside `workerd`),

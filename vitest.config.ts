@@ -32,6 +32,14 @@ export default defineConfig({
         },
       },
       {
+        // Scripts that run in Node (CD helpers): plain Node, no Worker bindings.
+        test: {
+          name: 'scripts',
+          include: ['test/scripts/**/*.test.mjs'],
+          environment: 'node',
+        },
+      },
+      {
         // Integration tests run in Node against a real `wrangler dev --local` (started by global-setup.ts)
         // and a scripted OAuth provider on localhost.
         test: {
