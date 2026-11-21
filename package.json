@@ -11,7 +11,7 @@
     "build": "wrangler deploy --dry-run --outdir dist --env=''",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
-    "test": "vitest run --project unit",
+    "test": "vitest run --project unit --project scripts",
     "test:integration": "vitest run --project integration",
     "test:poller": "python3 -I -m unittest discover -s hermes-plugin/tests -p 'test_transfer_client.py' && npm run -s test:watch",
     "test:watch": "python3 -I -m unittest discover -s hermes-plugin/tests -p test_watch.py",

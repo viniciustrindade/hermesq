@@ -49,6 +49,8 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+      - name: Require the Cloudflare credentials (fails first, naming what is missing)
+        run: node scripts/ensure-queues.mjs --check-credentials "$TARGET"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -86,6 +88,8 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+      - name: Require the Cloudflare credentials (fails first, naming what is missing)
+        run: node scripts/ensure-queues.mjs --check-credentials "$TARGET"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
