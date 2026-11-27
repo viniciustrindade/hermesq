@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
   workflow_call:
 
 permissions:
@@ -25,6 +25,8 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      - name: Public content gate
+        run: node --test test/public-content.test.mjs && node scripts/check-public-content.mjs
       - run: npm run lint
       - run: npm run typecheck
       - name: Unit tests (workerd)

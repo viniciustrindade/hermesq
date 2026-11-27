@@ -5,7 +5,7 @@ agent host that **never opens a port**. The Worker verifies each provider's sign
 duplicates, queues the event and turns it into a *delivery*. Your host long-polls the Worker over outbound
 HTTPS, runs the delivery and acks it.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/solidareasy/hermesq)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/viniciustrindade/hermesq)
 
 ```
  GitHub / Linear /      HTTPS POST        ┌───────────────────────────────┐    long-poll (outbound)   ┌────────────┐
@@ -87,7 +87,7 @@ idempotent.
 The [Hermes](https://hermes-agent.nousresearch.com) gateway plugin lives in `hermes-plugin/`:
 
 ```sh
-hermes plugins install https://github.com/solidareasy/hermesq#hermes-plugin
+hermes plugins install https://github.com/viniciustrindade/hermesq#hermes-plugin
 # add both lines to the profile's .env (its path: `hermes config env-path`)
 HERMESQ_URL=https://<your-worker>.workers.dev
 HERMESQ_SECRET=<the secret from /setup>
@@ -125,6 +125,89 @@ X-Hermes-Consumer:  <stable id of this host>
   `failed` retries after 1 s, 2 s, 4 s… until `MAX_ATTEMPTS` (default 3), then the delivery becomes a
   `dead-letter`.
 
+### Push API (WebSocket)
+
+Instead of polling, a host can open one outbound WebSocket and receive GitHub and Linear events as they
+arrive, like a durable RabbitMQ queue. The Worker does not know how many machines there are: whoever connects
+and declares what it wants gets it. The poll API above is unchanged.
+
+```
+GET /ws?consumer=<name>&filter=repo:infra,ref:main&filter=linear:abc-123     (Upgrade: websocket)
+```
+
+Signed like every request of the poll API (`X-Hermes-Timestamp` and `X-Hermes-Signature` over `GET /ws?<query>`
+with an empty body, so the consumer and the filters cannot be changed in transit). `consumer` is a lowercase
+name (`[a-z0-9-]`, up to 64) and **routes, it does not authorize**: any host that holds the shared secret can
+use any name. One socket per consumer; a new connection closes the old one with code `4001` (a client that
+gets `4001` must not reconnect on its own, another process took the name).
+
+**Tags.** Every event is stored with tags derived from its payload, lowercase: `source:<github|linear>`,
+`type:<push|pull_request|issue|…>`, `repo:<name>` and `ref:<branch>` when the payload has them, and one
+`linear:abc-<n>` for each `ABC-<n>` found in the branch name, PR title or body, push commit messages, or the
+issue identifier of a Linear event. Only the team keys listed in the Worker secret `LINEAR_TEAM_KEYS`
+(comma separated, each `[a-z][a-z0-9]{0,9}`, case-insensitive; example `abc,xyz`) produce a `linear:` tag; empty or
+unset means no `linear:` tag. The hub accepts events of any branch: publishing never filters.
+
+**Filters.** The subscriber sends a list of filters. A filter is a comma list of tags that must all match (AND);
+the event is delivered when any filter matches (OR). `*` in the value is a glob (`ref:release/*`, `repo:*`).
+At most 20 filters of 8 tags each, and 1800 bytes in all (they live in the socket's 2 KiB attachment, not in
+the Hibernation tags, which are limited to 10).
+
+Messages (JSON text frames):
+
+| direction | message | meaning |
+| --- | --- | --- |
+| client → hub | `{"op":"hello","last_id":N}` | Replay what was missed after `N` (omit `last_id` to continue from the consumer's cursor; a consumer never seen before starts at the head). Live events only start after the hello. |
+| hub → client | `{"op":"event","id":N,"source","eventKey","eventTypes","tags","payload","receivedAt"}` | One event; `id` grows with the log. |
+| hub → client | `{"op":"ready","consumer","filters","last_ack","replayed":N}` | The replay is over; the socket is live. |
+| client → hub | `{"op":"ack","id":N}` | Moves the cursor of this consumer to `N` (only forward). Without an ack nothing is resent until the next hello. |
+| hub → client | `{"op":"error","reason":"unknown_op"\|"invalid_ack"}` | The socket stays open. |
+
+Keepalive: send the text `ping`; the runtime answers `pong` without waking the Durable Object. The log keeps
+7 days of events (a Durable Object alarm drops the older ones); the replay runs only when a client says hello.
+A deploy that changes the code of the Durable Object drops the sockets: clients reconnect and say hello.
+Stripe and Slack events are not published to the hub.
+
+### Repository sync in the Hermes plugin
+
+The plugin keeps the existing `/hermes/poll` path for ordinary subscriptions (`github-events.sh` and
+`hermesq watch` are unchanged). For repo sync, it opens a separate **outbound** `/ws` subscription while
+the gateway runs; it does not start a timer, another process, or an agent turn. Install the plugin and copy
+`hermes-plugin/sync-repo.sh` **and** `hermes-plugin/sync-repo.ts` together into
+`<HERMES_HOME>/scripts/`. The wrapper only calls `node` (>= 22.18); TypeScript runs directly.
+
+```sh
+# Set these in the gateway profile environment, then restart its gateway:
+HERMESQ_WS_FILTERS='source:github,type:push,repo:*;source:github,repo:example,ref:release/*'
+HERMESQ_FILTERS='github-events.sh,sync-repo.sh'
+HERMESQ_CONSUMER='hermes-host-a' # optional; default hermes-<hostname>, lowercase
+HERMESQ_SYNC_ORG='example-org' # required: GitHub org or user whose repos may sync
+HERMESQ_SYNC_ROOT='/path/to/clones' # required: directory containing your clones
+HERMESQ_REPO_OWNERS='example=operator,*=fallback' # assignee per repo; `*` is the default
+HERMESQ_SYNC_CARD_PREFIX='' # optional prefix for failure card titles and bodies
+HERMESQ_SYNC_CREDENTIAL_HELPER='/absolute/path/to/git-credential-helper.ts'
+SYNC_APP_ENV='/path/to/app.env' # helper's secure 0600 file, provisioned on this machine
+```
+
+Each semicolon-separated group in `HERMESQ_WS_FILTERS` is OR; its comma-separated tags are AND; `*`
+is a value glob. Only `source:github` push events with matching `repo:<name>` and `ref:<branch>` and a
+`<HERMESQ_SYNC_ORG>/<name>` payload can sync. Other refs only fetch; `main`/`develop` fast-forward an existing,
+clean local branch after `git fetch --prune origin`. Clones are located by raw `origin` (SSH or HTTPS) under
+`HERMESQ_SYNC_ROOT`. No reset, merge or checkout. A missing `HERMESQ_SYNC_ORG` or `HERMESQ_SYNC_ROOT` exits 1 with
+one line naming the variable, and no card is created. Persistent failures
+create one idempotent Kanban card `sync-<repo>-<branch>` for the mapped owner; success creates none.
+
+The optional credential helper uses a GitHub App configured in `SYNC_APP_ENV`, not a personal token.
+It reads `GH_APP_ID` and `GH_APP_PEM_B64` from this 0600 file, not from the process environment.
+Provision the file securely on each authorized host; sharing a PEM increases the blast radius
+(a compromised host can mint tokens). Request only `contents: read` when minting installation
+tokens, or use a read-only installation until the helper supports permission reduction.
+Without the helper, fetch uses unauthenticated host git: the personal `gh`/keyring helper
+is disabled, and SSH origins are rewritten to HTTPS. A private repo without App access therefore creates
+a failure card rather than using personal credentials. The WebSocket cursor lives at
+`<HERMES_HOME>/hermesq-ws-<consumer>.cursor` with mode 0600; reconnect sends `hello {last_id}` and
+acknowledges events only after the local filter returns `[SILENT]`. Keep the consumer stable for replay.
+
 ## Subscriptions
 
 A subscription maps event types to a prompt. They live in KV (`subscriptions:list`), so changing them
@@ -138,7 +221,7 @@ needs no redeploy. Until you save a list, the built-in defaults in `src/subscrip
     "prompt": "Slack mention from {event.user} in {event.channel}: {event.text}",
     "skills": [],
     "deliver": "slack",
-    "deliverChatId": "C0123456789",
+    "deliverChatId": "<channel-id>",
     "enabled": true
   }
 ]
@@ -163,6 +246,11 @@ needs no redeploy. Until you save a list, the built-in defaults in `src/subscrip
   timeout (`HERMESQ_FILTER_TIMEOUT`, default 120 s) acks `failed` and the Worker retries, so make
   the script idempotent. Its environment is an allowlist (`PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TZ`,
   `HERMES_*`); if it cannot be built the script does not run. stdout and stderr are capped at 64 KiB each.
+- `consumer` (optional, `^[a-z0-9][a-z0-9-]{0,63}$`): the deliveries of this subscription go only to the poller
+  whose `X-Hermes-Consumer` is the same value; without it any consumer may claim them (the queue is competing
+  consumers). One subscription per host makes an event reach every host. It routes, it does not authorize: the
+  header is declared by the client and every host shares the same `HERMES_WEBHOOK_SECRET`.
+  Existing D1 databases get the new `deliveries.consumer` column on first use, with no migration step.
 
 ```sh
 ADMIN_TOKEN=... npm run seed -- --url https://<worker> --file my-subscriptions.json
@@ -198,7 +286,7 @@ script must be a regular file inside `~/.hermes/scripts/` (a symlink pointing ou
 
 ```sh
 # install: the plugin + one cron
-hermes plugins install https://github.com/solidareasy/hermesq#hermes-plugin
+hermes plugins install https://github.com/viniciustrindade/hermesq#hermes-plugin
 printf '#!/bin/sh\nexec hermes hermesq watch\n' > ~/.hermes/scripts/hermesq-watch.sh
 chmod +x ~/.hermes/scripts/hermesq-watch.sh
 hermes cron create every 10m --name hermesq-watch --script hermesq-watch.sh --no-agent --deliver origin
@@ -243,7 +331,7 @@ npm ci
 npm test                  # unit tests in workerd (miniflare): KV, D1, Queues, Durable Object
 npm run test:integration  # starts wrangler dev --local + a scripted OAuth provider
 npm run test:poller       # Python client (stdlib)
-npm run test:mutation     # 17 mutants, each must make the suite fail
+npm run test:mutation     # every mutant must make the suite fail
 HERMES_PYTHON=<hermes venv>/bin/python npm run test:plugin   # gateway adapter, needs a Hermes checkout
 npm run lint && npm run typecheck && npm run build
 ```

@@ -5,6 +5,7 @@ import type { Env, QueueMessageBody } from './types';
 // Entry module: only the default handler and Durable Object classes may be exported from here
 // (workerd refuses to start on any other named export; see src/app.ts).
 export { OAuthStore } from './durable-objects/oauth-store';
+export { Hub } from './hub/hub';
 
 export default {
   fetch: app.fetch,

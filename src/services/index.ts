@@ -55,6 +55,8 @@ export const github: ServiceAdapter = {
 };
 
 const LINEAR_ACTIONS: Record<string, string> = { create: 'created', update: 'updated', remove: 'removed' };
+const LINEAR_TYPE = /^[A-Z][A-Za-z0-9]*$/;
+const LINEAR_ACTION = /^[a-z][A-Za-z0-9]*$/;
 
 export const linear: ServiceAdapter = {
   service: 'linear',
@@ -75,7 +77,10 @@ export const linear: ServiceAdapter = {
     const p = obj(payload);
     const type = str(p.type);
     const action = str(p.action);
-    if (!type) return [];
+    // The type and action become event names (and `<agent>/` prefixes are added by the route), so
+    // anything that is not a plain identifier matches no subscription: a workspace secret cannot forge agent-prefixed events.
+    if (!type || !LINEAR_TYPE.test(type)) return [];
+    if (p.action !== undefined && p.action !== null && !(typeof p.action === 'string' && LINEAR_ACTION.test(p.action))) return [];
     const types = [type];
     if (action) {
       types.push(`${type}.${action}`);

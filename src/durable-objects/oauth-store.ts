@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { decryptString, encryptString, generateKeyMaterial, importAesKey } from '../oauth/crypto';
 import { type OAuthTokens, parseTokenResponse, providerConfig, RECONNECT_ERRORS } from '../oauth/providers';
-import { type Env, OAUTH_SERVICES, type OAuthService, STORABLE_SECRETS, type StorableSecret } from '../types';
+import { type Env, OAUTH_SERVICES, type OAuthService, isStorableSecret, type StorableSecret } from '../types';
 import { randomToken } from '../utils/hmac';
 
 /** Refresh when less than this share of the token lifetime is left (spec: proactive at 80% TTL). */
@@ -40,7 +40,6 @@ export function needsRefresh(t: Pick<OAuthTokens, 'expires_at' | 'obtained_at'>,
   return now >= t.expires_at - lifetime * REFRESH_REMAINING_FRACTION;
 }
 
-const isStorable = (name: string): name is StorableSecret => (STORABLE_SECRETS as readonly string[]).includes(name);
 
 /**
  * Single global instance (`idFromName('global')`). Holds OAuth tokens and the secrets typed into
@@ -93,14 +92,14 @@ export class OAuthStore extends DurableObject<Env> {
   // ---- secrets typed into /setup --------------------------------------------------------------
 
   async getSecret(name: string): Promise<string | null> {
-    if (!isStorable(name)) return null;
+    if (!isStorableSecret(name)) return null;
     return (await this.open<string>(await this.ctx.storage.get<string>(`secret:${name}`))) ?? null;
   }
 
   async setSecrets(values: Record<string, string>): Promise<string[]> {
     const saved: string[] = [];
     for (const [name, value] of Object.entries(values)) {
-      if (!isStorable(name)) throw new Error(`unknown secret: ${name}`);
+      if (!isStorableSecret(name)) throw new Error(`unknown secret: ${name}`);
       if (typeof value !== 'string') throw new Error(`secret ${name} must be a string`);
       if (value === '') await this.ctx.storage.delete(`secret:${name}`);
       else await this.ctx.storage.put(`secret:${name}`, await this.seal(value));
@@ -116,7 +115,7 @@ export class OAuthStore extends DurableObject<Env> {
 
   /** Generates a random secret, stores it and returns it once (shown by the wizard). */
   async generateSecret(name: string): Promise<string> {
-    if (!isStorable(name)) throw new Error(`unknown secret: ${name}`);
+    if (!isStorableSecret(name)) throw new Error(`unknown secret: ${name}`);
     const value = randomToken(32);
     await this.setSecrets({ [name]: value });
     return value;

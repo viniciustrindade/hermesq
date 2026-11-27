@@ -70,7 +70,7 @@ describe('POST /github: signature and dedupe', () => {
   });
 
   it('a redelivery with the same X-GitHub-Delivery answers duplicate and creates no second delivery', async () => {
-    const payload = withCheck(checkCreated, { name: 'review/lock' });
+    const payload = withCheck(checkCreated, { name: 'review/bot-b' });
     const first = await sendGithub('check_run', 'gh-dup', payload);
     expect(first.status).toBe(202);
     const again = await sendGithub('check_run', 'gh-dup', payload);
@@ -84,13 +84,13 @@ describe('POST /github: signature and dedupe', () => {
 describe('github-* default subscriptions', () => {
   it('check_run created queued for review/<agent> → github-check-queued delivery with the check in the payload', async () => {
     // Recorded payload; name set to what the request-review workflow creates (status is already queued).
-    const payload = withCheck(checkCreated, { name: 'review/lock', external_id: 'Codertocat/Hello-World#2@ec26c3e57ca3a959ca5aad62de7213c562f8c821' });
+    const payload = withCheck(checkCreated, { name: 'review/bot-b', external_id: 'Codertocat/Hello-World#2@ec26c3e57ca3a959ca5aad62de7213c562f8c821' });
     expect((payload.check_run as Json).status).toBe('queued');
     expect((await sendGithub('check_run', 'gh-q1', payload)).status).toBe(202);
     const d = (await collect(['github:gh-q1']))['github:gh-q1']!;
     expect(d).toMatchObject({ subscriptionName: 'github-check-queued', event: 'check_run.created' });
-    expect((d.payload as Json).check_run).toMatchObject({ name: 'review/lock', status: 'queued', head_sha: 'ec26c3e57ca3a959ca5aad62de7213c562f8c821' });
-    expect(d.prompt).toContain('review/lock');
+    expect((d.payload as Json).check_run).toMatchObject({ name: 'review/bot-b', status: 'queued', head_sha: 'ec26c3e57ca3a959ca5aad62de7213c562f8c821' });
+    expect(d.prompt).toContain('review/bot-b');
     expect(d.prompt).not.toContain('Codertocat/Hello-World#2@'); // F3: external_id is attacker-shaped text, never in the prompt
     expect(d.prompt).not.toContain('External id');
   });
@@ -102,23 +102,23 @@ describe('github-* default subscriptions', () => {
     expect(await routedStatus('github:gh-ci2')).toMatchObject({ status: 'no-match', deliveries: [] });
   });
 
-  it('check_run completed for review/iris → github-check-completed (the gate update)', async () => {
-    const payload = withCheck(checkCompleted, { name: 'review/iris' });
+  it('check_run completed for review/bot-a → github-check-completed (the gate update)', async () => {
+    const payload = withCheck(checkCompleted, { name: 'review/bot-a' });
     expect((payload.check_run as Json).conclusion).toBe('success');
     expect((await sendGithub('check_run', 'gh-c1', payload)).status).toBe(202);
     const d = (await collect(['github:gh-c1']))['github:gh-c1']!;
     expect(d).toMatchObject({ subscriptionName: 'github-check-completed', event: 'check_run.completed' });
-    expect(d.prompt).toBe('Check review/iris: success\nSHA: ec26c3e57ca3a959ca5aad62de7213c562f8c821');
+    expect(d.prompt).toBe('Check review/bot-a: success\nSHA: ec26c3e57ca3a959ca5aad62de7213c562f8c821');
   });
 
   it('a review check created already in_progress (someone took it) does not ask for a review', async () => {
-    const payload = withCheck(checkCreated, { name: 'review/lock', status: 'in_progress' });
+    const payload = withCheck(checkCreated, { name: 'review/bot-b', status: 'in_progress' });
     expect((await sendGithub('check_run', 'gh-ip', payload)).status).toBe(202);
     expect(await routedStatus('github:gh-ip')).toMatchObject({ status: 'no-match' });
   });
 
   it('a queued review check that is not "created" (e.g. rerequested) does not open a second review', async () => {
-    const payload = withCheck(checkCreated, { name: 'review/lock' });
+    const payload = withCheck(checkCreated, { name: 'review/bot-b' });
     payload.action = 'rerequested';
     expect((await sendGithub('check_run', 'gh-rr', payload)).status).toBe(202);
     expect(await routedStatus('github:gh-rr')).toMatchObject({ status: 'no-match' });
@@ -131,21 +131,21 @@ describe('github-* default subscriptions', () => {
     expect(d.prompt).toBe('Review PR #2: Update the README with new information.\nRepo: Codertocat/Hello-World\nReviewer: octocat');
   });
 
-  it('"/iris review" commented on a pull request → github-review-command', async () => {
-    expect((await sendGithub('issue_comment', 'gh-cmd', withComment('/iris review', true))).status).toBe(202);
+  it('"/reviewer review" commented on a pull request → github-review-command', async () => {
+    expect((await sendGithub('issue_comment', 'gh-cmd', withComment('/reviewer review', true))).status).toBe(202);
     const d = (await collect(['github:gh-cmd']))['github:gh-cmd']!;
     expect(d).toMatchObject({ subscriptionName: 'github-review-command', event: 'issue_comment.created' });
   });
 
-  it.each(['NONE', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN'])('"/iris review" from author_association %s creates no delivery (B6)', async (assoc) => {
-    const payload = withComment('/iris review', true);
+  it.each(['NONE', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN'])('"/reviewer review" from author_association %s creates no delivery (B6)', async (assoc) => {
+    const payload = withComment('/reviewer review', true);
     (payload.comment as Json).author_association = assoc;
     expect((await sendGithub('issue_comment', `gh-assoc-${assoc}`, payload)).status).toBe(202);
     expect(await routedStatus(`github:gh-assoc-${assoc}`)).toMatchObject({ status: 'no-match' });
   });
 
-  it.each(['OWNER', 'MEMBER', 'COLLABORATOR'])('"/iris review" from author_association %s creates the delivery (B6)', async (assoc) => {
-    const payload = withComment('/iris review', true);
+  it.each(['OWNER', 'MEMBER', 'COLLABORATOR'])('"/reviewer review" from author_association %s creates the delivery (B6)', async (assoc) => {
+    const payload = withComment('/reviewer review', true);
     (payload.comment as Json).author_association = assoc;
     expect((await sendGithub('issue_comment', `gh-assoc-ok-${assoc}`, payload)).status).toBe(202);
     const d = (await collect([`github:gh-assoc-ok-${assoc}`]))[`github:gh-assoc-ok-${assoc}`]!;
@@ -154,7 +154,7 @@ describe('github-* default subscriptions', () => {
 
   it('a plain comment, or the command on an issue that is not a pull request, creates no delivery', async () => {
     expect((await sendGithub('issue_comment', 'gh-plain', issueComment)).status).toBe(202);
-    expect((await sendGithub('issue_comment', 'gh-issue', withComment('/iris review', false))).status).toBe(202);
+    expect((await sendGithub('issue_comment', 'gh-issue', withComment('/reviewer review', false))).status).toBe(202);
     expect(await routedStatus('github:gh-plain')).toMatchObject({ status: 'no-match' });
     expect(await routedStatus('github:gh-issue')).toMatchObject({ status: 'no-match' });
   });

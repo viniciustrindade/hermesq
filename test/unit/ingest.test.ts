@@ -106,7 +106,7 @@ describe('webhook ingestion', () => {
   });
 
   it('GitHub review_requested and Stripe invoice events land in their own subscriptions', async () => {
-    const ghRaw = JSON.stringify({ action: 'review_requested', pull_request: { number: 7, title: 'Add core' }, repository: { full_name: 'o/r' }, requested_reviewer: { login: 'iris' } });
+    const ghRaw = JSON.stringify({ action: 'review_requested', pull_request: { number: 7, title: 'Add core' }, repository: { full_name: 'o/r' }, requested_reviewer: { login: 'reviewer' } });
     const gh = await call('/github', {
       method: 'POST',
       headers: { 'x-github-event': 'pull_request', 'x-github-delivery': 'gh-1', 'x-hub-signature-256': `sha256=${await hmacSha256Hex(GITHUB_SECRET, ghRaw)}` },
@@ -120,7 +120,7 @@ describe('webhook ingestion', () => {
     expect(st.status).toBe(202);
 
     const got = await collect(['github:gh-1', 'stripe:evt_1']);
-    expect(got['github:gh-1']).toMatchObject({ subscriptionName: 'github-pr-review-requested', prompt: 'Review PR #7: Add core\nRepo: o/r\nReviewer: iris' });
+    expect(got['github:gh-1']).toMatchObject({ subscriptionName: 'github-pr-review-requested', prompt: 'Review PR #7: Add core\nRepo: o/r\nReviewer: reviewer' });
     expect(got['stripe:evt_1']).toMatchObject({ subscriptionName: 'stripe-payment-succeeded', prompt: 'Payment succeeded for cus_1: 4200' });
   });
 

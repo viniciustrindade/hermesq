@@ -20,6 +20,8 @@ export default async function setup(project: TestProject) {
     ADMIN_TOKEN: 'it-admin-token',
     HERMES_WEBHOOK_SECRET: 'it-hermes-secret',
     LINEAR_WEBHOOK_SECRET: 'it-linear-secret',
+    LINEAR_WEBHOOK_SECRET_WORKER_A: 'it-worker-a-app-secret',
+    LINEAR_TEAM_KEYS: 'abc',
     GITHUB_WEBHOOK_SECRET: 'it-github-secret',
     STRIPE_WEBHOOK_SECRET: 'it-stripe-secret',
     SLACK_SIGNING_SECRET: 'it-slack-secret',

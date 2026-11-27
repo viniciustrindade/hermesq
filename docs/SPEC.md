@@ -2,16 +2,16 @@
 
 ## Problem Statement
 
-O Hermes (gateway de agentes da Solidareasy) precisa receber eventos de múltiplos serviços externos (Linear, Stripe, Slack GitHub) **sem expor portas no host**. A arquitetura atual usa webhook push (porta 8644), o que exige firewall, TLS, NAT e causa downtime no restart do gateway.
+O gateway de agentes precisa receber eventos de múltiplos serviços externos (Linear, Stripe, Slack, GitHub) **sem expor portas no host**. Uma arquitetura com webhook push exige firewall, TLS, NAT e causa downtime no restart do gateway.
 
-**Política da casa (§3 Identidade, rede e acesso)**: "Webhook de provedor externo que exige URL HTTPS pública = Cloudflare Worker de revezamento: o Worker valida assinatura e timestamp, deduplica pelo ID da entrega e guarda o evento; o host só **busca** os eventos por conexão de saída autenticada, sem nenhuma porta aberta."
+**Política de acesso**: o Worker valida assinatura e timestamp, deduplica pelo ID da entrega e guarda o evento; o host só **busca** os eventos por conexão de saída autenticada, sem nenhuma porta aberta.
 
 **Objetivo**: Um **Cloudflare Worker centralizado** (`hermesQ`) que:
 - Recebe webhooks de todos os serviços (HMAC validado na borda)
 - Armazena em KV + enfileira em Cloudflare Queues (uma fila por serviço)
 - Hermes faz **long-poll outbound** (`/hermes/poll`) → processa → `/hermes/ack`
 - Zero portas no Hermes, deploy independente, escala horizontal via consumer groups
-- **Repo `solidareasy/hermesq` PRIVADO até validarmos** (decisão do Vinicius, 10/11/2026); depois de validado, vira público, instalável por qualquer pessoa pelo botão **Deploy to Cloudflare**; sem NoxKey, sem Terraform, sem CLI local; segredos pelo assistente `/setup` (OAuth) e pelos secrets do próprio Worker
+- Instalação pelo botão **Deploy to Cloudflare**, sem CLI local; segredos pelo assistente `/setup` (OAuth) e pelos secrets do próprio Worker
 
 ## Solution
 
@@ -27,8 +27,8 @@ O Hermes (gateway de agentes da Solidareasy) precisa receber eventos de múltipl
 │             │                 │ - Fan-out            │                       ▼
 └─────────────┘                 └──────────┬───────────┘            ┌─────────────────┐
                                             │                        │  Agents       │
-                                            ▼                        │  (Iris, Lock, │
-                                    ┌──────────────────┐            │   Dozer, etc) │
+                                            ▼                        │  (consumers) │
+                                    ┌──────────────────┐            │              │
                                     │ KV / D1 / Queues │            │  - Code review│
                                     │ (estado/eventos) │            │  - Provision  │
                                     └──────────────────┘            │  - Orchestrate│
@@ -58,11 +58,11 @@ O Hermes (gateway de agentes da Solidareasy) precisa receber eventos de múltipl
 7. As a **Hermes operator**, I want the poller to run as a background task inside the gateway process (plugin or cron), so that it starts/stops with Hermes automatically.
 
 ### Event Processing & Routing
-8. As a **squad member**, I want GitHub `pull_request_review_requested` to create a Kanban card for the requested reviewer with idempotency key `EXT-{PR}-{agent}-review`, so that reviews are tracked and deduplicated.
-9. As a **squad member**, I want GitHub `check_run.completed` for `review/iris` to update the gate status and promote the Oracle gate task, so that merge readiness is visible.
-10. As a **squad member**, I want Linear `Issue.assigned` with `EXT-N` prefix to create/assign a Kanban card **mirroring Linear assignee** (idempotency `EXT-N`), so that Kanban and Linear stay in sync (§5: "O Kanban espelha a atribuição do Linear").
-11. As a **squad member**, I want Stripe `invoice.payment_succeeded` to create an Apoc provisioning task, so that customer onboarding is automated.
-12. As a **squad member**, I want Slack `app_mention` mentioning the bot to create an Oracle response task, so that chat interactions are tracked.
+8. As a **consumer**, I want GitHub `pull_request_review_requested` to create a Kanban card for the requested reviewer with an idempotency key, so that reviews are tracked and deduplicated.
+9. As a **consumer**, I want GitHub `check_run.completed` for a review check to update gate status, so that merge readiness is visible.
+10. As a **consumer**, I want Linear `Issue.assigned` to create/assign a Kanban card **mirroring Linear assignee**, so that Kanban and Linear stay in sync.
+11. As a **consumer**, I want Stripe `invoice.payment_succeeded` to create a provisioning task, so that customer onboarding is automated.
+12. As a **consumer**, I want Slack `app_mention` mentioning the bot to create a response task, so that chat interactions are tracked.
 
 ### Subscriptions & Extensibility
 13. As a **platform engineer**, I want subscriptions stored in KV/D1 (not code), so that adding a new event route doesn't require Worker redeploy.
@@ -217,7 +217,7 @@ Executa `refreshAllIfNeeded()` — verifica todos os serviços, refresh se neces
 | `github-pr-review` | `pull_request_review.submitted`, `.dismissed` | Review {review.state} on {repository.full_name}#{pull_request.number} by {review.user.login} | — | `log` |
 | `linear-issue-synced` | `Issue.created`, `Issue.updated`, `Issue.assigned` | Linear {entity.identifier} {action}: {entity.title}\nState: {entity.state.name} | `code-review` | `log` |
 | `stripe-payment-succeeded` | `invoice.payment_succeeded` | Payment succeeded for {data.object.customer}: {data.object.amount_paid} | `provision` | `log` |
-| `slack-mention` | `app_mention` | Slack mention from {event.user} in {event.channel}: {event.text} | `oracle` | `slack` |
+| `slack-mention` | `app_mention` | Slack mention from {event.user} in {event.channel}: {event.text} | configured owner | `slack` |
 
 ### 4. CI/CD Pipeline
 
@@ -319,25 +319,25 @@ jobs:
 
 **GitHub Environments** (Settings → Environments):
 - `staging` — auto-deploy on push to main
-- `production` — `workflow_dispatch` com aprovação do Vinicius (required reviewers = Vinicius)
+- `production` — `workflow_dispatch` com aprovação do proprietário da instalação
 
 **Secrets do GitHub Environment** (só para o CD): `CLOUDFLARE_API_TOKEN` e `CLOUDFLARE_ACCOUNT_ID`. `WORKER_NAME` não é segredo: fica como *variable* do Environment (`vars.WORKER_NAME`).
 Todos os demais segredos (client IDs/secrets OAuth, webhook secrets, `OAUTH_ENCRYPTION_KEY`, `HERMES_WEBHOOK_SECRET`) são configurados pelo wizard `/setup` e guardados como secrets do Worker ou cifrados no Durable Object.
 
 ### 5. Instalação: botão Deploy to Cloudflare (sem Terraform)
 
-- O `README.md` do repo traz o botão (só funciona com o repo público; no período privado, instalar com `wrangler deploy`): `https://deploy.workers.cloudflare.com/?url=https://github.com/<org>/<repo>`.
+- O `README.md` do repo traz o botão (só funciona com repo público; com repo privado, instalar com `wrangler deploy`): `https://deploy.workers.cloudflare.com/?url=https://github.com/<org>/<repo>`.
 - O botão cria KV, Queues, D1 e Durable Object a partir do `wrangler.jsonc` e liga o Workers Builds ao repo do usuário.
 - Depois do deploy, o usuário abre `/setup`: o wizard gera `OAUTH_ENCRYPTION_KEY` na primeira execução e conduz o OAuth.
 - Segredos de webhook (GitHub, Stripe, Hermes HMAC) são pedidos pelo wizard e salvos como secrets do Worker; nunca vão para o git.
 - Desinstalar: `cd.yml` com `action: uninstall` (`wrangler delete`); KV, Queues e D1 exigem limpeza manual.
-- O repo é **privado até validarmos** e depois **público**; nada específico da Solidareasy fica nele (a instância da Solidareasy é só mais uma instalação).
+- O repositório público não inclui dados específicos de uma instalação.
 
 ### 6. GitHub
 
-- Transição: o ticker por polling do Hermes cobre a revisão de PR **temporariamente**. Esta rota é a solução final e substitui o ticker (desligar o cron do Lock/Iris quando entrar).
+- Transição: o ticker por polling cobre a revisão de PR **temporariamente**. Esta rota substitui o ticker quando entrar.
 - Webhook URL: `https://hermesQ.<subdomain>.workers.dev/github`; eventos: pull_request, pull_request_review_requested, check_run, issue_comment; secret `GITHUB_WEBHOOK_SECRET`.
-- Iris/Lock são GitHub Apps, fora da lista de revisores nativos: caminho `/iris review` em comentário.
+- GitHub Apps podem ficar fora da lista de revisores nativos; um comando de revisão em comentário pode acionar o fluxo.
 
 ### 7. Linear Webhook Configuration
 
@@ -345,7 +345,7 @@ Todos os demais segredos (client IDs/secrets OAuth, webhook secrets, `OAUTH_ENCR
 - Events: Issue (created, updated, assigned, removed), Comment (created, updated)
 - Secret: `LINEAR_WEBHOOK_SECRET`
 - **Handler único idempotente**: dedupe por header `Linear-Delivery`; cartão Kanban com `--idempotency-key EXT-N`
-- **Kanban espelha Linear**: assignee/delegate muda → handler reatribui cartão para perfil do agente ou lane `vinicius`
+- **Kanban espelha Linear**: assignee/delegate muda → handler reatribui cartão para perfil ou lane configurada
 - **Sem avisos no Slack DM** (§5: "Slack: nenhum aviso de Kanban, Linear, GitHub ou Orca na DM")
 
 ### 8. Stripe Webhook Configuration
@@ -365,7 +365,7 @@ Todos os demais segredos (client IDs/secrets OAuth, webhook secrets, `OAUTH_ENCR
 - **Worker routes**: Mock `Hono` context, verify HMAC validation, idempotency check, queue send
 - **Queue consumer**: Mock `MessageBatch`, verify subscription matching, delivery creation, retry logic
 - **Prompt rendering**: Test `{payload.field}` interpolation, nested paths, missing fields
-- **Filter scripts**: Test `filter-iris-mention.py` (mention detection), `filter-pr-triage.py` (draft/bot filtering)
+- **Filter scripts**: Test mention detection and PR triage (draft/bot filtering)
 - **Subscription CRUD**: KV read/write for subscriptions list
 - **OAuthStore**: Token encrypt/decrypt, refresh logic, expiration calculation, reconnection flow
 
@@ -393,7 +393,7 @@ Todos os demais segredos (client IDs/secrets OAuth, webhook secrets, `OAUTH_ENCR
 
 ## Out of Scope
 
-- **Discord** (decisão do Vinicius, 10/11/2026: fora desta versão; Interactions não entrega menções a bot)
+- **Discord** (fora desta versão; Interactions não entrega menções a bot)
 - **Worker-to-Worker communication** (no service mesh needed)
 - **Custom domain / Cloudflare Access** for Worker endpoints (use `*.workers.dev` initially)
 - **Rate limiting per-client** (Cloudflare built-in WAF handles DDoS)
@@ -458,12 +458,8 @@ Todos os demais segredos (client IDs/secrets OAuth, webhook secrets, `OAUTH_ENCR
 ```
 
 ### Replaces These Files (to be deleted after review)
-This spec replaces/consolidates:
-- `/home/vinicius/workspace/solidareasy/ARCHITECTURE_GITHUB_CF_HERMES_NO_PORTS.md`
-- `/home/vinicius/workspace/solidareasy/ARCHITECTURE_GITHUB_CF_HERMES.md`
-- `/home/vinicius/workspace/solidareasy/IRIS_GITHUB_EVENTS_PROMPT.md` (prompt templates → subscriptions)
-- `/home/vinicius/workspace/solidareasy/webhook-event-map.md` (event map → subscriptions + user stories)
-- `/home/vinicius/workspace/solidareasy/infra/packages/cloudflare-webhook-broker/` (entire package → migrated)
+This spec consolidates earlier architecture notes, prompt templates, event maps, and the legacy webhook broker package.
+Keep project-specific locations outside the public repository.
 
 ### Transição
 - O transfer é a solução final com todos os serviços (Linear, GitHub, Stripe, Slack). Até o GitHub entrar, vale o ticker por polling do Hermes. Discord segue fora (Interactions não entrega menções).
@@ -476,7 +472,7 @@ This spec replaces/consolidates:
 2. Implement Worker routes + queue consumers + subscription store + OAuthStore DO
 3. Write unit tests (Vitest) — routes, queue, subscriptions, OAuth
 4. Add `ci.yml` + `cd.yml` (GitHub Actions)
-5. Botão Deploy to Cloudflare + README + repo `solidareasy/hermesq` (privado até validar) + licença
+5. Botão Deploy to Cloudflare + README + repo público + licença
 6. Deploy to staging → configure Linear/Stripe/Slack webhooks
 7. Implement Hermes poller plugin
 8. Seed default subscriptions

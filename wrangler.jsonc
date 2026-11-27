@@ -16,8 +16,8 @@
   },
   "kv_namespaces": [{ "binding": "EVENT_STORE" }],
   "d1_databases": [{ "binding": "DB", "database_name": "hermesq" }],
-  "durable_objects": { "bindings": [{ "name": "OAUTH_STORE", "class_name": "OAuthStore" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OAuthStore"] }],
+  "durable_objects": { "bindings": [{ "name": "OAUTH_STORE", "class_name": "OAuthStore" }, { "name": "HUB", "class_name": "Hub" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OAuthStore"] }, { "tag": "v2", "new_sqlite_classes": ["Hub"] }],
   "triggers": { "crons": ["0 * * * *"] },
   "queues": {
     "producers": [
@@ -46,8 +46,8 @@
       },
       "kv_namespaces": [{ "binding": "EVENT_STORE" }],
       "d1_databases": [{ "binding": "DB", "database_name": "hermesq-staging" }],
-      "durable_objects": { "bindings": [{ "name": "OAUTH_STORE", "class_name": "OAuthStore" }] },
-      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OAuthStore"] }],
+      "durable_objects": { "bindings": [{ "name": "OAUTH_STORE", "class_name": "OAuthStore" }, { "name": "HUB", "class_name": "Hub" }] },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OAuthStore"] }, { "tag": "v2", "new_sqlite_classes": ["Hub"] }],
       "triggers": { "crons": ["0 * * * *"] },
       "queues": {
         "producers": [

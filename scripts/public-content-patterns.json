@@ -1,0 +1,8 @@
+[
+  { "name": "absolute user home", "regex": "/home/[^/\\s]+/workspace/" },
+  { "name": "private repository reference", "regex": "\\b(?:squad-[a-z][a-z-]*|hermesq-(?:internal|private))\\b" },
+  { "name": "tailnet host", "regex": "\\b[a-z0-9.-]+\\.ts\\.net\\b" },
+  { "name": "internal network label", "regex": "\\b[a-z0-9-]+-city\\b" },
+  { "name": "non-example email", "regex": "\\b[A-Z0-9._%+-]+@(?!example\\.(?:com|org|net)\\b|(?:users\\.noreply\\.)?github\\.com\\b)[A-Z0-9.-]+\\.[A-Z]{2,}\\b" },
+  { "name": "Slack channel link", "regex": "https?://[^/\\s]*slack\\.com/archives/" }
+]

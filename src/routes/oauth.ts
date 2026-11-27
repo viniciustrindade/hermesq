@@ -1,6 +1,6 @@
 import { type Context, Hono } from 'hono';
 import { clearSecretCache, oauthStore } from '../secrets';
-import { type Env, OAUTH_SERVICES, type OAuthService, SERVICES, STORABLE_SECRETS } from '../types';
+import { type Env, OAUTH_SERVICES, type OAuthService, SERVICES, STORABLE_SECRETS, isStorableSecret } from '../types';
 import { requireAdmin } from './admin';
 import { setupPage } from './setup-page';
 
@@ -29,7 +29,7 @@ setup.get('/', (c) => c.html(setupPage()));
 setup.get('/state', requireAdmin, async (c) => {
   const store = oauthStore(c.env);
   const stored = new Set(await store.storedSecretNames());
-  const secrets = STORABLE_SECRETS.map((name) => ({
+  const secrets = [...new Set([...STORABLE_SECRETS, ...stored])].map((name) => ({
     name,
     source: typeof c.env[name] === 'string' && c.env[name] ? 'worker-secret' : stored.has(name) ? 'setup' : null,
   }));
@@ -50,7 +50,7 @@ setup.post('/secrets', requireAdmin, async (c) => {
   const body = (await c.req.json().catch(() => null)) as Record<string, string> | null;
   if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ error: 'invalid_json' }, 400);
   for (const [name, value] of Object.entries(body)) {
-    if (!(STORABLE_SECRETS as readonly string[]).includes(name)) return c.json({ error: 'invalid_secret', detail: `unknown secret: ${name}` }, 400);
+    if (!isStorableSecret(name)) return c.json({ error: 'invalid_secret', detail: `unknown secret: ${name}` }, 400);
     if (typeof value !== 'string') return c.json({ error: 'invalid_secret', detail: `secret ${name} must be a string` }, 400);
   }
   try {

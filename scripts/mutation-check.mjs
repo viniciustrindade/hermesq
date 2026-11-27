@@ -28,6 +28,17 @@ const MUTANTS = [
   ['match-missing-field', 'src/subscriptions/matcher.ts', "if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') return false;", "if (v === undefined) return patterns.includes('*');", 'test/unit/github.test.ts'],
   ['github-queued-only', 'src/subscriptions/defaults.ts', "'check_run.status': ['queued'] ", "'check_run.status': ['*'] ", 'test/unit/github.test.ts'],
   ['admin-auth', 'src/routes/admin.ts', "if (!given || !timingSafeEqual(given, token)) return c.json({ error: 'unauthorized' }, 401);", '', 'test/unit/ingest.test.ts'],
+  ['ws-auth', 'src/routes/ws.ts', "if (err) return c.json({ error: 'unauthorized', reason: err }, err === 'not_configured' ? 503 : 401);", '', 'test/unit/hub.test.ts'],
+  ['hub-push-filter', 'src/hub/hub.ts', 'if (att?.ready && matchesAnyFilter(att.filters, input.tags)) ws.send(message);', 'if (att?.ready) ws.send(message);', 'test/unit/hub.test.ts'],
+  ['hub-live-after-hello', 'src/hub/hub.ts', 'if (att?.ready && matchesAnyFilter(att.filters, input.tags)) ws.send(message);', 'if (att && matchesAnyFilter(att.filters, input.tags)) ws.send(message);', 'test/unit/hub.test.ts'],
+  ['hub-replay-filter', 'src/hub/hub.ts', 'if (!matchesAnyFilter(att.filters, event.tags)) continue;', '', 'test/unit/hub.test.ts'],
+  ['hub-cursor-forward', 'src/hub/hub.ts', 'MAX(last_ack, excluded.last_ack)', 'excluded.last_ack', 'test/unit/hub.test.ts'],
+  ['hub-one-socket-per-consumer', 'src/hub/hub.ts', "for (const old of this.ctx.getWebSockets(consumerTag(sub.consumer))) old.close(CLOSE_REPLACED, 'replaced');", '', 'test/unit/hub.test.ts'],
+  ['hub-retention', 'src/hub/hub.ts', "sql.exec('DELETE FROM log WHERE received_at < ?', now - RETENTION_MS);", "sql.exec('DELETE FROM log WHERE received_at < ?', now - 30 * RETENTION_MS);", 'test/unit/hub.test.ts'],
+  ['hub-new-consumer-at-head', 'src/hub/hub.ts', 'const requested = typeof lastId === \'number\' && Number.isInteger(lastId) && lastId >= 0 ? lastId : (cursor ?? head);', 'const requested = typeof lastId === \'number\' && Number.isInteger(lastId) && lastId >= 0 ? lastId : (cursor ?? 0);', 'test/unit/hub.test.ts'],
+  ['tags-task-boundary', 'src/hub/tags.ts', '`(?<![a-z0-9])(?:${valid.join(\'|\')})-\\\\d+`', '`(?:${valid.join(\'|\')})-\\\\d+`', 'test/unit/hub-tags.test.ts'],
+  ['tags-glob', 'src/hub/tags.ts', 'globMatches(value, tag.slice(key.length + 1))', 'value === tag.slice(key.length + 1)', 'test/unit/hub-tags.test.ts'],
+  ['tags-or-between-filters', 'src/hub/tags.ts', 'return filters.some((filter) => filter.length > 0 && filter.every(', 'return filters.every((filter) => filter.length > 0 && filter.every(', 'test/unit/hub-tags.test.ts'],
 ];
 
 const only = process.argv.slice(2);

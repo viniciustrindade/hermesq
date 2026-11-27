@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -46,6 +47,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
 from . import transfer_client as tc
+from .ws_client import WsClient
 from .cli import register_cli
 
 logger = logging.getLogger(__name__)
@@ -69,23 +71,33 @@ class FilterError(Exception):
     """The filter script could not run or failed; the delivery is acked ``failed``."""
 
 
-def _default_scripts_dir() -> Path:
+def _hermes_home() -> Path:
     try:
         from hermes_constants import get_hermes_home
 
-        return Path(get_hermes_home()) / "scripts"
+        return Path(get_hermes_home())
     except Exception:  # outside a Hermes install (plain tests)
-        return Path(os.path.expanduser("~/.hermes")) / "scripts"
+        return Path(os.path.expanduser("~/.hermes"))
 
 
-def _script_env() -> dict:
+def _default_scripts_dir() -> Path:
+    return _hermes_home() / "scripts"
+
+
+def _script_env(*, sync: bool = False) -> dict:
     try:
         from tools.environments.local import build_subprocess_env
 
         base = build_subprocess_env()
     except Exception as err:  # fail closed: never fall back to os.environ; the type only, a message could carry a value
         raise FilterError(f"filter environment could not be built ({type(err).__name__}); filter not run") from None
-    return {k: v for k, v in base.items() if k in ENV_ALLOWED or k.startswith(ENV_ALLOWED_PREFIX)}
+    result = {k: v for k, v in base.items() if k in ENV_ALLOWED or k.startswith(ENV_ALLOWED_PREFIX)}
+    if sync:
+        # Only the sync filter needs the local App file path and owner map; other filters never see them.
+        for key in ('HERMESQ_SYNC_ROOT', 'HERMESQ_SYNC_CREDENTIAL_HELPER', 'HERMESQ_REPO_OWNERS', 'SYNC_APP_ENV'):
+            if key in os.environ:
+                result[key] = os.environ[key]
+    return result
 
 
 def parse_filters(raw: Optional[str]) -> tuple:
@@ -123,7 +135,7 @@ def run_filter(scripts_dir: Path, name: str, delivery: dict, timeout: float, all
     argv = resolve_filter(scripts_dir, name, allowed)
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
-                                cwd=str(scripts_dir), env=_script_env(), start_new_session=True)
+                                cwd=str(scripts_dir), env=_script_env(sync=name == 'sync-repo.sh'), start_new_session=True)
     except OSError as err:
         raise FilterError(f"filterScript {name} could not start: {err}") from None
     try:
@@ -209,6 +221,7 @@ class HermesQAdapter(BasePlatformAdapter):
         scripts_dir = _extra_or_secret(extra, "scripts_dir", "HERMESQ_SCRIPTS_DIR")
         self._scripts_dir = Path(os.path.expanduser(scripts_dir)) if scripts_dir else _default_scripts_dir()
         self._filters = parse_filters(_extra_or_secret(extra, "filters", "HERMESQ_FILTERS"))
+        self._ws_filters = _extra_or_secret(extra, "ws_filters", "HERMESQ_WS_FILTERS")
         try:
             self._filter_timeout = float(_extra_or_secret(extra, "filter_timeout", "HERMESQ_FILTER_TIMEOUT", DEFAULT_FILTER_TIMEOUT))
         except (TypeError, ValueError):
@@ -216,6 +229,7 @@ class HermesQAdapter(BasePlatformAdapter):
         self._client = client
         self._stop: Optional[asyncio.Event] = None
         self._task: Optional[asyncio.Task] = None
+        self._ws_task: Optional[asyncio.Task] = None
         self._inflight: dict[str, tuple[float, dict]] = {}
 
     # -- lifecycle ------------------------------------------------------------------------------
@@ -227,6 +241,19 @@ class HermesQAdapter(BasePlatformAdapter):
                 return False
             self._client = tc.TransferClient(self._url, self._secret, self._consumer)
         self._stop = asyncio.Event()
+        if self._ws_filters:
+            try:
+                resolve_filter(self._scripts_dir, 'sync-repo.sh', self._filters)
+                if not shutil.which('node') or not (self._scripts_dir / 'sync-repo.ts').is_file():
+                    raise FilterError('sync-repo requires node and sync-repo.ts beside the wrapper')
+                groups = [[tag.strip() for tag in group.split(',')] for group in self._ws_filters.split(';') if group.strip()]
+                socket = WsClient(self._url, self._secret, self._client.consumer, groups, _hermes_home())
+            except FilterError as err:
+                logger.error('[hermesq] WS sync disabled: %s', err)
+            except ValueError as err:
+                logger.error('[hermesq] WS sync disabled: %s', err)
+            else:
+                self._ws_task = asyncio.create_task(socket.run(self._on_ws_event, self._stop))
         self._task = asyncio.create_task(tc.run_loop(self._client, self._on_delivery, self._stop, limit=self._limit, on_fatal=self._on_fatal))
         self._mark_connected()
         self._wire_plugin_handlers(None)
@@ -239,14 +266,24 @@ class HermesQAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         if self._stop:
             self._stop.set()
-        if self._task:
-            self._task.cancel()
+        for task in (self._task, self._ws_task):
+            if not task:
+                continue
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._task = None
+        self._task = self._ws_task = None
         self._mark_disconnected()
+
+    async def _on_ws_event(self, event: dict) -> None:
+        """Sync is a local filter action, never an agent turn or a poll delivery."""
+        delivery = {**event, 'deliveryId': str(event['id']), 'filterScript': 'sync-repo.sh'}
+        output = await asyncio.to_thread(run_filter, self._scripts_dir, 'sync-repo.sh', delivery,
+                                         self._filter_timeout, self._filters)
+        if output != SILENT:
+            raise FilterError('sync-repo.sh must return [SILENT]')
 
     # -- inbound --------------------------------------------------------------------------------
 
