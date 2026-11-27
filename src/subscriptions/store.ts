@@ -6,6 +6,7 @@ export const SUBSCRIPTIONS_KEY = 'subscriptions:list';
 export class SubscriptionError extends Error {}
 
 const MAX_STARS = 8; // a glob with many separate `*` backtracks polynomially (ReDoS in the Worker)
+const CONSUMER = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const MATCH_PATH = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
 
 /** `{ path: pattern | pattern[] }` → `{ path: pattern[] }` (throws SubscriptionError). */
@@ -62,6 +63,11 @@ export function parseSubscriptions(input: unknown): Subscription[] {
     if (chat) sub.deliverChatId = chat;
     const filter = optStr(s.filterScript, 'filterScript');
     if (filter) sub.filterScript = filter;
+    const consumer = optStr(s.consumer, 'consumer');
+    if (consumer !== undefined) {
+      if (!CONSUMER.test(consumer)) throw new SubscriptionError(`${name}.consumer is invalid (lowercase letters, digits and -, 1 to 64 characters)`);
+      sub.consumer = consumer;
+    }
     if (s.match !== undefined) sub.match = parseMatch(name, s.match);
     return sub;
   });

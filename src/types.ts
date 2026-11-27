@@ -1,4 +1,5 @@
 import type { OAuthStore } from './durable-objects/oauth-store';
+import type { Hub } from './hub/hub';
 
 export type ServiceName = 'github' | 'linear' | 'stripe' | 'slack';
 export const SERVICES: readonly ServiceName[] = ['github', 'linear', 'stripe', 'slack'];
@@ -37,6 +38,8 @@ export interface HermesDelivery {
   deliver: string;
   deliverChatId?: string;
   filterScript?: string;
+  /** Copied from the subscription: only the poller sending this `X-Hermes-Consumer` may claim it. Absent = any consumer. */
+  consumer?: string;
   payload: unknown;
   sourceDeliveryId: string;
   createdAt: string;
@@ -53,6 +56,8 @@ export interface Subscription {
   deliver: string;
   deliverChatId?: string;
   filterScript?: string;
+  /** Optional: only the poller that sends this `X-Hermes-Consumer` may claim the deliveries; without it any consumer may. Routing, not authorization. */
+  consumer?: string;
   /**
    * Optional payload filter: every `path` must hold a string/number/boolean that matches one of its
    * glob patterns (`*` = any run of characters, anchored). Lets a subscription take only `review/*`
@@ -74,12 +79,16 @@ export const STORABLE_SECRETS = [
   'SLACK_CLIENT_ID',
   'SLACK_CLIENT_SECRET',
 ] as const;
-export type StorableSecret = (typeof STORABLE_SECRETS)[number];
+export type StorableSecret = (typeof STORABLE_SECRETS)[number] | `LINEAR_WEBHOOK_SECRET_${string}`;
+export const isStorableSecret = (name: string): name is StorableSecret =>
+  (STORABLE_SECRETS as readonly string[]).includes(name) || /^LINEAR_WEBHOOK_SECRET_[A-Z][A-Z0-9_]*$/.test(name);
 
 export interface Env {
+  [key: string]: unknown;
   EVENT_STORE: KVNamespace;
   DB: D1Database;
   OAUTH_STORE: DurableObjectNamespace<OAuthStore>;
+  HUB: DurableObjectNamespace<Hub>;
   EVENT_QUEUE_GITHUB: Queue<EventMessage>;
   EVENT_QUEUE_LINEAR: Queue<EventMessage>;
   EVENT_QUEUE_STRIPE: Queue<EventMessage>;
@@ -91,6 +100,7 @@ export interface Env {
   OAUTH_ENCRYPTION_KEY?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   LINEAR_WEBHOOK_SECRET?: string;
+  LINEAR_TEAM_KEYS?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   SLACK_SIGNING_SECRET?: string;
   HERMES_WEBHOOK_SECRET?: string;

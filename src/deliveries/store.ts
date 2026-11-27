@@ -55,10 +55,10 @@ export class DeliveryStore {
     const res = await withSchema(this.db, () =>
       this.db
         .prepare(
-          `INSERT INTO deliveries (delivery_id, subscription_name, event, source_event_key, status, attempts, max_attempts, available_at, body, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?) ON CONFLICT (delivery_id) DO NOTHING`,
+          `INSERT INTO deliveries (delivery_id, subscription_name, event, source_event_key, status, attempts, max_attempts, available_at, consumer, body, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?) ON CONFLICT (delivery_id) DO NOTHING`,
         )
-        .bind(d.deliveryId, d.subscriptionName, d.event, d.sourceDeliveryId, d.maxAttempts, now, JSON.stringify(d), now, now)
+        .bind(d.deliveryId, d.subscriptionName, d.event, d.sourceDeliveryId, d.maxAttempts, now, d.consumer ?? null, JSON.stringify(d), now, now)
         .run(),
     );
     const inserted = (res.meta.changes ?? 0) > 0;
@@ -85,16 +85,17 @@ export class DeliveryStore {
   /**
    * Atomically claims up to `limit` ready deliveries for one consumer. Each poller instance gets
    * disjoint deliveries (one UPDATE ... RETURNING), which is what lets several Hermes hosts share the work.
+   * A delivery that names a consumer is claimable only by it; one without a consumer, by any.
    */
   async claim(consumer: string, limit: number, leaseMs: number, now = Date.now()): Promise<StoredDelivery[]> {
     const { results } = await withSchema(this.db, () =>
       this.db
         .prepare(
           `UPDATE deliveries SET status = 'processing', attempts = attempts + 1, lease_until = ?, claimed_by = ?, updated_at = ?
-           WHERE seq IN (SELECT seq FROM deliveries WHERE status = 'pending' AND available_at <= ? ORDER BY seq LIMIT ?)
+           WHERE seq IN (SELECT seq FROM deliveries WHERE status = 'pending' AND available_at <= ? AND (consumer IS NULL OR consumer = ?) ORDER BY seq LIMIT ?)
            RETURNING *`,
         )
-        .bind(now + leaseMs, consumer, now, now, limit)
+        .bind(now + leaseMs, consumer, now, now, consumer, limit)
         .all<Row>(),
     );
     return results.map(toDelivery).sort((a, b) => a.seq - b.seq);

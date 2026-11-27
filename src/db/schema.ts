@@ -21,6 +21,7 @@ export const SCHEMA: string[] = [
      available_at      INTEGER NOT NULL,
      lease_until       INTEGER,
      claimed_by        TEXT,
+     consumer          TEXT,
      body              TEXT NOT NULL,
      result            TEXT,
      created_at        INTEGER NOT NULL,
@@ -38,14 +39,26 @@ export const SCHEMA: string[] = [
 
 export async function ensureSchema(db: D1Database): Promise<void> {
   await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
+  await addColumnIfMissing(db, 'deliveries', 'consumer', 'TEXT');
 }
 
-/** Runs `fn`; if the tables do not exist yet, creates them and runs it once more. */
+/** Databases provisioned before a column existed: CREATE TABLE IF NOT EXISTS leaves them as they were, so add it. */
+async function addColumnIfMissing(db: D1Database, table: string, column: string, type: string): Promise<void> {
+  const { results } = await db.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
+  if (results.some((c) => c.name === column)) return;
+  try {
+    await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run();
+  } catch (err) {
+    if (!/duplicate column name/i.test(String((err as Error)?.message ?? err))) throw err; // another request added it first
+  }
+}
+
+/** Runs `fn`; if the tables or a newer column do not exist yet, creates/adds them and runs it once more. */
 export async function withSchema<T>(db: D1Database, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    if (!/no such table/i.test(String((err as Error)?.message ?? err))) throw err;
+    if (!/no such (table|column)|has no column named/i.test(String((err as Error)?.message ?? err))) throw err;
     await ensureSchema(db);
     return fn();
   }

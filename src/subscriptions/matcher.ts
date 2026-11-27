@@ -47,5 +47,6 @@ export async function buildDelivery(msg: EventMessage, sub: Subscription, event:
   };
   if (sub.deliverChatId) delivery.deliverChatId = sub.deliverChatId;
   if (sub.filterScript) delivery.filterScript = sub.filterScript;
+  if (sub.consumer) delivery.consumer = sub.consumer;
   return delivery;
 }

@@ -41,6 +41,9 @@ class RegistryCtx:
         platform_registry.register(entry)
         REGISTERED.append(entry)
 
+    def register_cli_command(self, **_kw):
+        pass
+
 
 wt_plugin.register(RegistryCtx())
 
@@ -191,7 +194,7 @@ class FilterScriptTests(unittest.IsolatedAsyncioTestCase):
         os.environ["HERMESQ_SECRET"] = "must-not-leak"
 
     def tearDown(self):
-        for name in ("HERMESQ_SECRET", "GH_APP_PEM_B64", "GH_TOKEN", "UNLISTED_VAR", "HERMES_TEST_MARK"):
+        for name in ("HERMESQ_SECRET", "GH_APP_PEM_B64", "GH_TOKEN", "UNLISTED_VAR", "HERMES_TEST_MARK", "SYNC_APP_ENV"):
             os.environ.pop(name, None)
         pid_file = self.dir.parent / "grandchild.pid"
         if pid_file.exists():  # the grandchild of the session-escape test outlives its script
@@ -275,7 +278,7 @@ class FilterScriptTests(unittest.IsolatedAsyncioTestCase):
         client = StubClient()
         adapter, events = self.make(client)
         marker = self.dir / "ran.txt"
-        name = self.script("lock-review-tick.sh", f'echo ran > "{marker}"\necho "[SILENT]"\n')
+        name = self.script("review-tick.sh", f'echo ran > "{marker}"\necho "[SILENT]"\n')
         await adapter._on_delivery(delivery("m1-1", filterScript=name))
         self.assertFalse(marker.exists())
         self.assertEqual(events, [])
@@ -309,7 +312,7 @@ class FilterScriptTests(unittest.IsolatedAsyncioTestCase):
     # -- M2: the script's environment is an allowlist and fails closed --------------------------
 
     async def test_the_script_gets_only_allowlisted_variables_never_the_app_key_or_tokens(self):
-        os.environ.update({"GH_APP_PEM_B64": "fake-pem", "GH_TOKEN": "fake-token", "UNLISTED_VAR": "x", "HERMES_TEST_MARK": "kept"})
+        os.environ.update({"GH_APP_PEM_B64": "fake-pem", "GH_TOKEN": "fake-token", "UNLISTED_VAR": "x", "HERMES_TEST_MARK": "kept", "SYNC_APP_ENV": "/fake/reader.env"})
         client = StubClient()
         adapter, events = self.make(client)
         out = self.dir / "env.txt"
@@ -317,7 +320,7 @@ class FilterScriptTests(unittest.IsolatedAsyncioTestCase):
         await adapter._on_delivery(delivery("m2-1", filterScript=name))
         self.assertEqual(client.acks[0][1], "delivered")
         seen = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
-        for leaked in ("GH_APP_PEM_B64", "GH_TOKEN", "HERMESQ_SECRET", "UNLISTED_VAR"):
+        for leaked in ("GH_APP_PEM_B64", "GH_TOKEN", "HERMESQ_SECRET", "UNLISTED_VAR", "SYNC_APP_ENV"):
             self.assertNotIn(leaked, seen)
         self.assertNotIn("fake-pem", out.read_text())
         self.assertEqual(seen.get("HERMES_TEST_MARK"), "kept")
@@ -370,6 +373,67 @@ class FilterScriptTests(unittest.IsolatedAsyncioTestCase):
             adapter_mod.resolve_filter(self.dir, "x.sh\n", ("x.sh\n",))
         self.assertIn("only a file name", str(ctx.exception))
 
+
+class SyncSocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ws_events_run_the_local_filter_and_never_start_an_agent_turn(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'sync-repo.sh').write_text(f'cat > "{root / "seen.json"}"\nenv > "{root / "env.txt"}"\necho "[SILENT]"\n')
+            cfg = PlatformConfig(enabled=True, extra={'url': 'https://worker.test', 'secret': 's',
+                'scripts_dir': str(root), 'filters': 'github-events.sh,sync-repo.sh',
+                'ws_filters': 'source:github,repo:*,ref:*'})
+            adapter = adapter_mod.HermesQAdapter(cfg, client=StubClient())
+            events = []
+            async def handle(event): events.append(event)
+            adapter.handle_message = handle
+            with mock.patch.dict(os.environ, {'SYNC_APP_ENV': '/fake/reader.env', 'GH_APP_PEM_B64': 'fake-pem'}):
+                await adapter._on_ws_event({'op': 'event', 'id': 1, 'tags': ['repo:infra'], 'payload': {}})
+            self.assertEqual(events, [])
+            self.assertEqual(adapter._client.acks, [])
+            import json
+            self.assertEqual(json.loads((root / 'seen.json').read_text())['deliveryId'], '1')
+            env = (root / 'env.txt').read_text()
+            self.assertIn('SYNC_APP_ENV=/fake/reader.env', env)
+            self.assertNotIn('GH_APP_PEM_B64', env)
+
+    async def test_connect_disables_invalid_sync_but_keeps_poll_running(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = PlatformConfig(enabled=True, extra={'url': 'https://worker.test', 'secret': 's',
+                'scripts_dir': temp, 'filters': 'github-events.sh,sync-repo.sh', 'ws_filters': 'source:github'})
+            adapter = adapter_mod.HermesQAdapter(cfg, client=StubClient())
+            with self.assertLogs(adapter_mod.logger, level='ERROR'):
+                self.assertTrue(await adapter.connect())
+            self.assertIsNotNone(adapter._task)
+            self.assertIsNone(adapter._ws_task)
+            await adapter.disconnect()
+
+            (Path(temp) / 'sync-repo.sh').write_text('echo "[SILENT]"\n')
+            (Path(temp) / 'sync-repo.ts').write_text('// fixture\n')
+            cfg.extra['ws_filters'] = 'invalid'
+            invalid = adapter_mod.HermesQAdapter(cfg, client=StubClient())
+            with self.assertLogs(adapter_mod.logger, level='ERROR'):
+                self.assertTrue(await invalid.connect())
+            self.assertIsNotNone(invalid._task)
+            self.assertIsNone(invalid._ws_task)
+            await invalid.disconnect()
+
+    async def test_connect_starts_one_ws_client_with_or_filters_while_poll_stays_running(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / 'sync-repo.sh').write_text('echo "[SILENT]"\n')
+            (Path(temp) / 'sync-repo.ts').write_text('// fixture\n')
+            cfg = PlatformConfig(enabled=True, extra={'url': 'https://worker.test', 'secret': 's',
+                'scripts_dir': temp, 'filters': 'github-events.sh,sync-repo.sh',
+                'ws_filters': 'source:github, repo:*;source:github,ref:release/*'})
+            adapter = adapter_mod.HermesQAdapter(cfg, client=StubClient())
+            with mock.patch.object(adapter_mod, 'WsClient') as cls:
+                cls.return_value.run = mock.AsyncMock()
+                self.assertTrue(await adapter.connect())
+                self.assertEqual(cls.call_args.args[3], [['source:github', 'repo:*'], ['source:github', 'ref:release/*']])
+                self.assertIsNotNone(adapter._task)
+                await adapter.disconnect()
 
 class EnvEnablementTests(unittest.TestCase):
     def setUp(self):

@@ -71,6 +71,38 @@ describe('wrangler dev --local: ingestion', () => {
     expect(await (await fetch(`${URL_}/health`)).json()).toMatchObject({ ok: true });
   });
 
+  it('routes a signed agent session through the loaded subscription to /admin/deliveries', async () => {
+    const subscription = {
+      name: 'linear-agent-session', events: ['worker-a/AgentSessionEvent.created', 'worker-a/AgentSessionEvent.prompted'],
+      prompt: 'Linear agent session {action} ({agentSession.id})', skills: [], deliver: 'log', enabled: true,
+    };
+    const current = await fetch(`${URL_}/admin/subscriptions`, { headers: ADMIN });
+    expect(current.status).toBe(200);
+    const { subscriptions } = (await current.json()) as { subscriptions: Record<string, unknown>[] };
+    const loaded = await fetch(`${URL_}/admin/subscriptions`, {
+      method: 'PUT', headers: ADMIN, body: JSON.stringify([...subscriptions, subscription]),
+    });
+    expect(loaded.status).toBe(200);
+
+    const id = 'it-agent-session';
+    const fixture = JSON.parse(readFileSync('test/fixtures/linear/agent-session-created.json', 'utf8'));
+    const raw = JSON.stringify({ ...fixture, webhookTimestamp: Date.now() });
+    const response = await fetch(`${URL_}/linear/worker-a`, {
+      method: 'POST', headers: { 'linear-signature': hmac(VARS.LINEAR_WEBHOOK_SECRET_WORKER_A!, raw), 'linear-delivery': id }, body: raw,
+    });
+    expect(response.status).toBe(200);
+    const deadline = Date.now() + 15_000;
+    let delivery: Record<string, unknown> | undefined;
+    while (Date.now() < deadline && !delivery) {
+      const listing = await fetch(`${URL_}/admin/deliveries`, { headers: ADMIN });
+      expect(listing.status).toBe(200);
+      const { deliveries } = (await listing.json()) as { deliveries: Record<string, unknown>[] };
+      delivery = deliveries.find((d) => d.sourceDeliveryId === `linear:${id}`);
+      if (!delivery) await sleep(200);
+    }
+    expect(delivery).toMatchObject({ subscriptionName: 'linear-agent-session', event: 'worker-a/AgentSessionEvent.created', prompt: 'Linear agent session created (session-test)' });
+  });
+
   it('idempotency: the same Linear-Delivery twice -> second is duplicate', async () => {
     expect((await linear('it-dup', issue)).status).toBe(202);
     const second = await linear('it-dup', issue);
@@ -86,7 +118,7 @@ describe('wrangler dev --local: ingestion', () => {
       linear('it-multi', issue),
       stripe({ id: 'evt_it', type: 'invoice.payment_succeeded', data: { object: { customer: 'cus_it', amount_paid: 1 } } }),
       slack({ type: 'event_callback', event_id: 'EvIT', event: { type: 'app_mention', user: 'U', channel: 'C', text: 'hi' } }),
-      github('gh-it', 'check_run', { action: 'completed', check_run: { name: 'review/iris', conclusion: 'success', head_sha: 'abc' } }),
+      github('gh-it', 'check_run', { action: 'completed', check_run: { name: 'review/bot-a', conclusion: 'success', head_sha: 'abc' } }),
     ]);
     expect(res.map((r) => r.status)).toEqual([202, 202, 202, 202]);
     const got = await collect(['linear:it-multi', 'stripe:evt_it', 'slack:EvIT', 'github:gh-it']);
@@ -96,13 +128,13 @@ describe('wrangler dev --local: ingestion', () => {
       'slack:EvIT': 'slack-mention',
       'github:gh-it': 'github-check-completed',
     });
-    expect(got['github:gh-it']!.prompt).toBe('Check review/iris: success\nSHA: abc');
+    expect(got['github:gh-it']!.prompt).toBe('Check review/bot-a: success\nSHA: abc');
     for (const d of Object.values(got)) expect((await ack(d.deliveryId as string, 'delivered')).status).toBe(200);
   });
 
-  it('GitHub: a recorded check_run.created for review/lock (queued) becomes github-check-queued; the same event for a CI check is filtered out in the Worker', async () => {
+  it('GitHub: a recorded check_run.created for review/bot-b (queued) becomes github-check-queued; the same event for a CI check is filtered out in the Worker', async () => {
     const recorded = JSON.parse(readFileSync('test/fixtures/github/check_run.created.json', 'utf8')) as Record<string, Record<string, unknown>>;
-    const review = { ...recorded, check_run: { ...recorded.check_run, name: 'review/lock' } };
+    const review = { ...recorded, check_run: { ...recorded.check_run, name: 'review/bot-b' } };
     expect((await github('gh-it-q', 'check_run', review)).status).toBe(202);
     expect((await github('gh-it-ci', 'check_run', recorded)).status).toBe(202);
     const got = await collect(['github:gh-it-q']);

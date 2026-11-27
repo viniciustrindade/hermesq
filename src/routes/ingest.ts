@@ -1,6 +1,7 @@
 import type { Context } from 'hono';
+import { publishToHub } from '../hub/publish';
 import { resolveSecret } from '../secrets';
-import { ADAPTERS } from '../services';
+import { ADAPTERS, type ServiceAdapter } from '../services';
 import type { Env, EventMessage, ServiceName } from '../types';
 import { claimEvent, EVENT_TTL_SECONDS, releaseEvent } from '../utils/idempotency';
 
@@ -9,10 +10,9 @@ export const eventRecordKey = (eventKey: string) => `event:${eventKey}`;
 
 /**
  * POST /<service>: verify signature -> dedupe by provider delivery id -> KV record -> service queue.
- * Answers fast (202) so the provider never times out; the queue consumer does the rest.
+ * Answers after enqueue; the queue consumer does the rest.
  */
-export async function ingest(c: Context<{ Bindings: Env }>, service: ServiceName): Promise<Response> {
-  const adapter = ADAPTERS[service];
+export async function ingest(c: Context<{ Bindings: Env }>, service: ServiceName, adapter: ServiceAdapter = ADAPTERS[service], acceptedStatus: 200 | 202 = 202): Promise<Response> {
   const env = c.env;
   const len = Number(c.req.header('content-length') ?? '0');
   if (len > MAX_BODY_BYTES) return c.json({ error: 'payload_too_large' }, 413);
@@ -67,5 +67,6 @@ export async function ingest(c: Context<{ Bindings: Env }>, service: ServiceName
     return c.json({ error: 'enqueue_failed' }, 500);
   }
   console.log(JSON.stringify({ msg: 'webhook accepted', service, eventKey, eventTypes: msg.eventTypes }));
-  return c.json({ status: 'accepted', eventKey }, 202);
+  await publishToHub(env, msg);
+  return c.json({ status: 'accepted', eventKey }, acceptedStatus);
 }

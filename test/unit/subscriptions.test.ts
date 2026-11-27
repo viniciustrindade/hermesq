@@ -57,13 +57,13 @@ describe('payload match (declarative filter, no code from the Worker)', () => {
   const subs = parseSubscriptions([
     { name: 'review', events: ['check_run.created'], prompt: '', match: { 'check_run.name': 'review/*', 'check_run.status': 'queued' } },
     { name: 'either', events: ['check_run.created'], prompt: '', match: { 'check_run.name': ['ci', 'lint*'] } },
-    { name: 'cmd', events: ['issue_comment.created'], prompt: '', match: { 'issue.pull_request.url': '*', 'comment.body': '/iris review*' } },
+    { name: 'cmd', events: ['issue_comment.created'], prompt: '', match: { 'issue.pull_request.url': '*', 'comment.body': '/reviewer review*' } },
   ]);
   const names = (eventTypes: string[], payload: unknown) => matchSubscriptions(subs, eventTypes, payload).map((m) => m.sub.name);
   it('every path must match its glob (* = any run of characters, anchored at both ends)', () => {
-    expect(names(['check_run.created'], { check_run: { name: 'review/lock', status: 'queued' } })).toEqual(['review']);
-    expect(names(['check_run.created'], { check_run: { name: 'review/lock', status: 'in_progress' } })).toEqual([]);
-    expect(names(['check_run.created'], { check_run: { name: 'xreview/lock', status: 'queued' } })).toEqual([]);
+    expect(names(['check_run.created'], { check_run: { name: 'review/bot-b', status: 'queued' } })).toEqual(['review']);
+    expect(names(['check_run.created'], { check_run: { name: 'review/bot-b', status: 'in_progress' } })).toEqual([]);
+    expect(names(['check_run.created'], { check_run: { name: 'xreview/bot-b', status: 'queued' } })).toEqual([]);
   });
   it('a list matches when any pattern does', () => {
     expect(names(['check_run.created'], { check_run: { name: 'lint-js' } })).toEqual(['either']);
@@ -71,9 +71,9 @@ describe('payload match (declarative filter, no code from the Worker)', () => {
     expect(names(['check_run.created'], { check_run: { name: 'cix' } })).toEqual([]);
   });
   it('a missing, null or object field never matches, not even *', () => {
-    expect(names(['issue_comment.created'], { issue: {}, comment: { body: '/iris review' } })).toEqual([]);
-    expect(names(['issue_comment.created'], { issue: { pull_request: { url: 'u' } }, comment: { body: '/iris review now' } })).toEqual(['cmd']);
-    expect(names(['issue_comment.created'], { issue: { pull_request: { url: 'u' } }, comment: { body: 'please /iris review' } })).toEqual([]);
+    expect(names(['issue_comment.created'], { issue: {}, comment: { body: '/reviewer review' } })).toEqual([]);
+    expect(names(['issue_comment.created'], { issue: { pull_request: { url: 'u' } }, comment: { body: '/reviewer review now' } })).toEqual(['cmd']);
+    expect(names(['issue_comment.created'], { issue: { pull_request: { url: 'u' } }, comment: { body: 'please /reviewer review' } })).toEqual([]);
     expect(names(['check_run.created'], { check_run: { name: { x: 1 }, status: 'queued' } })).toEqual([]);
   });
   it('regex metacharacters in a pattern are literal', () => {
@@ -125,6 +125,15 @@ describe('subscription validation', () => {
     ],
   ])('rejects %j', (input, message) => {
     expect(() => parseSubscriptions(input)).toThrow(message);
+  });
+  it.each(['A', 'UppercaseHost', '-a', 'a_b', 'a b', 'a'.repeat(65), 5, ['a']])('refuses consumer %j', (consumer) => {
+    expect(() => parseSubscriptions([{ name: 'a', events: ['x'], prompt: 'p', consumer }])).toThrow(/a\.consumer (is invalid|must be a string)/);
+  });
+  it('keeps a valid consumer and leaves it out when absent or empty', () => {
+    expect(parseSubscriptions([{ name: 'a', events: ['x'], prompt: 'p', consumer: '' }])[0]).not.toHaveProperty('consumer');
+    expect(parseSubscriptions([{ name: 'a', events: ['x'], prompt: 'p', consumer: 'host-a' }])[0]).toMatchObject({ consumer: 'host-a' });
+    expect(parseSubscriptions([{ name: 'a', events: ['x'], prompt: 'p', consumer: 'a'.repeat(64) }])[0]!.consumer).toBe('a'.repeat(64));
+    expect(parseSubscriptions([{ name: 'a', events: ['x'], prompt: 'p' }])[0]).not.toHaveProperty('consumer');
   });
   it('fills defaults (deliver=log, enabled=true, no skills)', () => {
     expect(parseSubscriptions([{ name: 'a', events: ['x'], prompt: 'p' }])).toEqual([{ name: 'a', events: ['x'], prompt: 'p', skills: [], deliver: 'log', enabled: true }]);

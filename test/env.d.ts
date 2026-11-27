@@ -6,7 +6,7 @@ declare global {
     interface Env extends AppEnv {}
     interface GlobalProps {
       mainModule: typeof import('../src/index');
-      durableNamespaces: 'OAuthStore';
+      durableNamespaces: 'OAuthStore' | 'Hub';
     }
   }
 }

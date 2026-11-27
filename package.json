@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run --project unit --project scripts",
     "test:integration": "vitest run --project integration",
-    "test:poller": "python3 -I -m unittest discover -s hermes-plugin/tests -p 'test_transfer_client.py' && npm run -s test:watch",
+    "test:poller": "python3 -I -m unittest discover -s hermes-plugin/tests -p 'test_transfer_client.py' && python3 -I -m unittest discover -s hermes-plugin/tests -p 'test_ws_client.py' && node --test hermes-plugin/tests/sync-repo.test.mjs && npm run -s test:watch",
     "test:watch": "python3 -I -m unittest discover -s hermes-plugin/tests -p test_watch.py",
     "test:mutation": "node scripts/mutation-check.mjs",
     "test:plugin": "sh -c '\"${HERMES_PYTHON:-python3}\" -I -m unittest discover -s hermes-plugin/tests -p test_adapter.py'",

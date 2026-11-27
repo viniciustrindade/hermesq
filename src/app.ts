@@ -4,7 +4,9 @@ import { admin } from './routes/admin';
 import { hermes } from './routes/hermes';
 import { ingest } from './routes/ingest';
 import { oauth, setup } from './routes/oauth';
-import { oauthStore } from './secrets';
+import { ws } from './routes/ws';
+import { oauthStore, resolveSecret } from './secrets';
+import { linear } from './services';
 import type { Env } from './types';
 import { pruneEvents } from './utils/idempotency';
 
@@ -13,6 +15,7 @@ import { pruneEvents } from './utils/idempotency';
 export const VERSION = '0.1.0';
 
 export const app = new Hono<{ Bindings: Env }>();
+const AGENT = /^[a-z][a-z0-9-]{0,31}$/;
 
 app.use('*', async (c, next) => {
   await next();
@@ -26,9 +29,25 @@ app.use('*', async (c, next) => {
 app.get('/health', (c) => c.json({ ok: true, service: 'hermesq', version: VERSION }));
 app.post('/github', (c) => ingest(c, 'github'));
 app.post('/linear', (c) => ingest(c, 'linear'));
+app.post('/linear/:agent', async (c) => {
+  const agent = c.req.param('agent');
+  if (!AGENT.test(agent)) return c.json({ error: 'not_found' }, 404);
+  const secretName = `LINEAR_WEBHOOK_SECRET_${agent.toUpperCase().replaceAll('-', '_')}` as const;
+  if (!(await resolveSecret(c.env, secretName))) return c.json({ error: 'not_found' }, 404);
+  const adapter = {
+    ...linear,
+    secretName,
+    eventTypes(headers: Headers, payload: unknown) {
+      // Only the `<agent>/` labels: this secret belongs to one agent's app and must not fabricate workspace events.
+      return linear.eventTypes(headers, payload).map((type) => `${agent}/${type}`);
+    },
+  };
+  return ingest(c, 'linear', adapter, 200);
+});
 app.post('/stripe', (c) => ingest(c, 'stripe'));
 app.post('/slack', (c) => ingest(c, 'slack'));
 app.route('/hermes', hermes);
+app.route('/ws', ws);
 app.route('/setup', setup);
 app.route('/oauth', oauth);
 app.route('/admin', admin);

@@ -18,6 +18,7 @@ export default defineConfig({
                 SLACK_SIGNING_SECRET: SLACK_VECTOR.secret,
                 // LINEAR_WEBHOOK_SECRET and HERMES_WEBHOOK_SECRET are left out on purpose: tests store them
                 // through /setup so the Durable Object secret path is exercised.
+                LINEAR_TEAM_KEYS: 'abc',
                 HERMES_LONG_POLL_MS: '5000',
                 HERMES_LEASE_SECONDS: '300',
                 MAX_ATTEMPTS: '3',

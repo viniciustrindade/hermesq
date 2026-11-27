@@ -19,7 +19,7 @@ export function hermesSigningString(ts: string, method: string, pathWithQuery: s
   return `${ts}.${method.toUpperCase()}.${pathWithQuery}.${body}`;
 }
 
-async function verifyHermes(env: Env, req: Request, body: string): Promise<string | null> {
+export async function verifyHermes(env: Env, req: Request, body: string): Promise<string | null> {
   const secret = await resolveSecret(env, 'HERMES_WEBHOOK_SECRET');
   if (!secret) return 'not_configured';
   const ts = req.headers.get('x-hermes-timestamp');
